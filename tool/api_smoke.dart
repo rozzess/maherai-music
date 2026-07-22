@@ -72,8 +72,13 @@ Future<void> main() async {
 
   print('--- StreamService.audioUrl(${song.id})');
   final streams = StreamService();
-  final url = await streams.audioUrl(song.id);
+  final url = await streams.audioUrl(song.id, expected: song.duration);
   print('stream url ok: ${Uri.parse(url).host}');
+
+  print('--- StreamService.videoUrl (muxed)');
+  final video = r.videos.isNotEmpty ? r.videos.first.track! : song;
+  final vurl = await streams.videoUrl(video.id);
+  print('video url ok: ${Uri.parse(vurl).host} (${video.title})');
   streams.dispose();
 
   print('ALL OK');

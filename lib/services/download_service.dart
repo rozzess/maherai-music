@@ -56,7 +56,8 @@ class DownloadService extends ChangeNotifier {
     active[track.id] = 0;
     notifyListeners();
     try {
-      final info = await _streams.downloadInfo(track.id);
+      final info =
+          await _streams.downloadInfo(track.id, expected: track.duration);
       final dir = await _downloadsDir();
       final ext = info.container.name; // mp4 → .mp4 (AAC audio), webm → .webm
       final file = File('${dir.path}${Platform.pathSeparator}${track.id}.$ext');

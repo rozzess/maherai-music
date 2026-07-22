@@ -65,7 +65,7 @@ class MiniPlayer extends StatelessWidget {
                     stream: handler.player.positionStream,
                     builder: (_, snap) {
                       final pos = snap.data ?? Duration.zero;
-                      final dur = handler.player.duration ?? Duration.zero;
+                      final dur = handler.displayDuration ?? Duration.zero;
                       final v = dur.inMilliseconds == 0
                           ? 0.0
                           : (pos.inMilliseconds / dur.inMilliseconds)

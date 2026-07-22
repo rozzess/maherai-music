@@ -55,6 +55,19 @@ class MaheraiAudioHandler extends BaseAudioHandler with SeekHandler {
   int _playRequestSeq = 0;
   List<Track>? _unshuffled;
   String? _cutoffRetryId;
+  bool _overrunHandled = false;
+
+  /// What the UI should show as the track length: the shorter of the song's
+  /// metadata duration and the loaded media's duration. A truncated stream
+  /// honestly shows where it will end; a bloated stream shows the song's
+  /// real length instead of 9 minutes of silence.
+  Duration? get displayDuration {
+    final meta = current.value?.duration;
+    final media = player.duration;
+    if (meta == null || meta <= Duration.zero) return media;
+    if (media == null || media <= Duration.zero) return meta;
+    return media < meta ? media : meta;
+  }
 
   MaheraiAudioHandler({
     required this.streams,
@@ -69,12 +82,29 @@ class MaheraiAudioHandler extends BaseAudioHandler with SeekHandler {
     player.playingStream.listen((_) => _broadcastState());
     player.durationStream.listen((d) {
       final item = mediaItem.value;
-      if (d != null && item != null && item.duration != d) {
-        mediaItem.add(item.copyWith(duration: d));
+      // Lock screen gets the honest length (min of metadata and media).
+      final effective = displayDuration ?? d;
+      if (effective != null && item != null && item.duration != effective) {
+        mediaItem.add(item.copyWith(duration: effective));
       }
     });
     player.processingStateStream.listen((state) {
       if (state == ProcessingState.completed && !_advancing) {
+        _onTrackCompleted();
+      }
+    });
+    // Overrun watchdog: some streams are LONGER than the actual song and
+    // "play" silence past its real end. When the position passes the song's
+    // metadata length, treat it as completed instead of sitting in silence.
+    player.positionStream.listen((pos) {
+      final expected = current.value?.duration;
+      if (expected == null || expected <= Duration.zero) return;
+      if (pos <= expected + const Duration(seconds: 2)) {
+        _overrunHandled = false;
+        return;
+      }
+      if (!_overrunHandled && !_advancing && player.playing) {
+        _overrunHandled = true;
         _onTrackCompleted();
       }
     });
@@ -281,7 +311,8 @@ class MaheraiAudioHandler extends BaseAudioHandler with SeekHandler {
       final localPath = downloads.pathFor(track.id);
       final source = localPath != null
           ? AudioSource.file(localPath)
-          : AudioSource.uri(Uri.parse(await streams.audioUrl(track.id)));
+          : AudioSource.uri(Uri.parse(
+              await streams.audioUrl(track.id, expected: track.duration)));
       if (seq != _playRequestSeq) return; // superseded by a newer request
       await player.setAudioSource(source);
       if (seq != _playRequestSeq) return;
@@ -296,7 +327,8 @@ class MaheraiAudioHandler extends BaseAudioHandler with SeekHandler {
           expected - actual > const Duration(seconds: 10)) {
         streams.invalidate(track.id);
         try {
-          final freshUrl = await streams.audioUrl(track.id);
+          final freshUrl =
+              await streams.audioUrl(track.id, expected: track.duration);
           if (seq != _playRequestSeq) return;
           await player.setAudioSource(AudioSource.uri(Uri.parse(freshUrl)));
           if (seq != _playRequestSeq) return;
@@ -333,7 +365,7 @@ class MaheraiAudioHandler extends BaseAudioHandler with SeekHandler {
       _cutoffRetryId = t.id;
       streams.invalidate(t.id);
       try {
-        final url = await streams.audioUrl(t.id);
+        final url = await streams.audioUrl(t.id, expected: t.duration);
         if (current.value?.id == t.id) {
           _advancing = true;
           await player.setAudioSource(
@@ -378,7 +410,9 @@ class MaheraiAudioHandler extends BaseAudioHandler with SeekHandler {
         i++) {
       final t = q[i];
       if (downloads.pathFor(t.id) == null) {
-        unawaited(streams.audioUrl(t.id).catchError((_) => ''));
+        unawaited(streams
+            .audioUrl(t.id, expected: t.duration)
+            .catchError((_) => ''));
       }
     }
   }

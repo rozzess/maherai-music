@@ -22,6 +22,8 @@ dependencies:
   cached_network_image: ^3.4.1
   shimmer: ^3.0.0
   palette_generator: ^0.3.3+7
+  video_player: ^2.9.1
+  wakelock_plus: ^1.2.8
 
 dev_dependencies:
   flutter_test:

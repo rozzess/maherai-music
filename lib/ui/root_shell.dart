@@ -7,6 +7,7 @@ import 'mini_player.dart';
 import 'screens/home_screen.dart';
 import 'screens/library_screen.dart';
 import 'screens/search_screen.dart';
+import 'screens/videos_screen.dart';
 
 /// App shell: three kept-alive tabs, a floating mini player, and a
 /// glass bottom navigation bar.
@@ -29,6 +30,7 @@ class _RootShellState extends State<RootShell> {
         children: const [
           HomeScreen(),
           SearchScreen(),
+          VideosScreen(),
           LibraryScreen(),
         ],
       ),
@@ -69,6 +71,11 @@ class _RootShellState extends State<RootShell> {
                       icon: Icon(Icons.search_rounded),
                       selectedIcon: Icon(Icons.search_rounded),
                       label: 'Search',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.smart_display_outlined),
+                      selectedIcon: Icon(Icons.smart_display_rounded),
+                      label: 'Videos',
                     ),
                     NavigationDestination(
                       icon: Icon(Icons.library_music_outlined),

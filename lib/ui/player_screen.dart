@@ -486,7 +486,7 @@ class _SeekBarState extends State<_SeekBar> {
     return StreamBuilder<Duration>(
       stream: player.positionStream,
       builder: (context, snap) {
-        final duration = player.duration ?? Duration.zero;
+        final duration = widget.handler.displayDuration ?? Duration.zero;
         final position = snap.data ?? Duration.zero;
         final max = duration.inMilliseconds.toDouble().clamp(1.0, double.infinity);
         final value =
