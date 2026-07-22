@@ -298,6 +298,15 @@ class InnerTube {
         .join()
         .replaceAll(RegExp(r'^\s*•\s*'), '');
 
+    // The card subtitle carries the duration ("Song • 4:19").
+    Duration? duration;
+    for (final text in subtitleTexts) {
+      if (RegExp(r'^\d+:\d\d').hasMatch(text.trim())) {
+        duration = _parseDuration(text.trim());
+        break;
+      }
+    }
+
     final nav = _nav(card, ['title', 'runs', 0, 'navigationEndpoint']);
     final videoId = _nav(nav, ['watchEndpoint', 'videoId']) as String?;
     var browseId = _nav(nav, ['browseEndpoint', 'browseId']) as String?;
@@ -321,6 +330,7 @@ class InnerTube {
           title: title,
           artist: subtitle.split('•').first.trim(),
           thumbUrl: thumb,
+          duration: duration,
         ),
       );
     }

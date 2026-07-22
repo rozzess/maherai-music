@@ -57,6 +57,28 @@ class MaheraiAudioHandler extends BaseAudioHandler with SeekHandler {
   List<Track>? _unshuffled;
   String? _cutoffRetryId;
   bool _overrunHandled = false;
+  Timer? _stallTimer;
+
+  Future<void> _recoverFromStall() async {
+    _stallTimer = null;
+    final t = current.value;
+    if (t == null || downloads.pathFor(t.id) != null || _advancing) return;
+    final pos = player.position;
+    streams.invalidate(t.id);
+    try {
+      final url = await streams.audioUrl(t.id, expected: t.duration);
+      if (current.value?.id != t.id) return;
+      _advancing = true;
+      await player.setAudioSource(
+        AudioSource.uri(Uri.parse(url)),
+        initialPosition: pos,
+      );
+      _advancing = false;
+      await player.play();
+    } catch (_) {
+      _advancing = false;
+    }
+  }
 
   /// What the UI should show as the track length: the shorter of the song's
   /// metadata duration and the loaded media's duration. A truncated stream
@@ -92,6 +114,20 @@ class MaheraiAudioHandler extends BaseAudioHandler with SeekHandler {
     player.processingStateStream.listen((state) {
       if (state == ProcessingState.completed && !_advancing) {
         _onTrackCompleted();
+      }
+    });
+    // Stall recovery: if a stream starves mid-song (URL died, throttled),
+    // the player sits in "buffering" forever. After 12s of that, re-resolve
+    // a fresh URL and resume from the same position.
+    player.playerStateStream.listen((st) {
+      final stalled = st.playing &&
+          st.processingState == ProcessingState.buffering &&
+          player.position > Duration.zero;
+      if (stalled) {
+        _stallTimer ??= Timer(const Duration(seconds: 12), _recoverFromStall);
+      } else {
+        _stallTimer?.cancel();
+        _stallTimer = null;
       }
     });
     // Overrun watchdog: some streams are LONGER than the actual song and
@@ -298,7 +334,7 @@ class MaheraiAudioHandler extends BaseAudioHandler with SeekHandler {
     final q = queueTracks.value;
     final idx = queueIndex.value;
     if (idx < 0 || idx >= q.length) return;
-    final track = q[idx];
+    var track = q[idx];
     final seq = ++_playRequestSeq;
 
     _advancing = true;
@@ -310,10 +346,40 @@ class MaheraiAudioHandler extends BaseAudioHandler with SeekHandler {
 
     try {
       final localPath = downloads.pathFor(track.id);
-      final source = localPath != null
-          ? AudioSource.file(localPath)
-          : AudioSource.uri(Uri.parse(
-              await streams.audioUrl(track.id, expected: track.duration)));
+      AudioSource source;
+      if (localPath != null) {
+        source = AudioSource.file(localPath);
+      } else {
+        final url =
+            await streams.audioUrl(track.id, expected: track.duration);
+        // The stream's true audio length (size/bitrate) is ground truth for
+        // what will actually play. Adopt it (with a +5% VBR margin) when the
+        // track has no metadata duration (home/top-result cards) or when the
+        // served file wildly disagrees with the metadata — so the watchdog
+        // and the duration display always reflect the real audio, not a
+        // lying container header or a wrong-length upload.
+        final approx = streams.approxDuration(track.id);
+        if (approx != null && approx > Duration.zero) {
+          final meta = track.duration;
+          final mismatch = meta == null ||
+              (approx - meta).abs().inSeconds >
+                  max(20, meta.inSeconds ~/ 4);
+          if (mismatch) {
+            track = track.copyWith(
+                duration: Duration(
+                    milliseconds: (approx.inMilliseconds * 1.05).round()));
+            final patched = List.of(queueTracks.value);
+            if (idx < patched.length && patched[idx].id == track.id) {
+              patched[idx] = track;
+              queueTracks.value = patched;
+              _syncQueueMediaItems();
+            }
+            current.value = track;
+            mediaItem.add(_toMediaItem(track));
+          }
+        }
+        source = AudioSource.uri(Uri.parse(url));
+      }
       if (seq != _playRequestSeq) return; // superseded by a newer request
       await player.setAudioSource(source);
       if (seq != _playRequestSeq) return;

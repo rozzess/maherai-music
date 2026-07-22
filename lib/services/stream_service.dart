@@ -12,6 +12,13 @@ class StreamService {
   final YoutubeExplode _yt = YoutubeExplode();
   final Map<String, (String url, DateTime expiry)> _cache = {};
   final Map<String, (String url, DateTime expiry)> _videoCache = {};
+  final Map<String, Duration> _approxDurations = {};
+
+  /// True audio length of the accepted stream, computed from file size at
+  /// the stream bitrate. Immune to lying container headers (files that claim
+  /// 9:44 while holding 3:22 of audio) — used when a track has no metadata
+  /// duration.
+  Duration? approxDuration(String videoId) => _approxDurations[videoId];
   // In-flight resolutions, so a prefetch and a play of the same id share one
   // network round trip instead of racing.
   final Map<String, Future<String>> _pending = {};
@@ -121,6 +128,7 @@ class StreamService {
         // plays as a cut-off short version. Only accept URLs that can serve
         // the END of the stream.
         if (!await _servesFullStream(best)) continue;
+        _recordApproxDuration(videoId, best);
         // Wrong-length guard: file size at this bitrate must roughly match
         // the song's real duration, otherwise the stream is a cut or padded
         // version of the track.
@@ -134,6 +142,13 @@ class StreamService {
     // watchdogs handle the mismatch at playback time.
     if (fullButWrongLength != null) return fullButWrongLength;
     throw Exception('No full audio stream for $videoId ($lastError)');
+  }
+
+  void _recordApproxDuration(String videoId, AudioOnlyStreamInfo info) {
+    final bps = info.bitrate.bitsPerSecond;
+    if (bps <= 0 || info.size.totalBytes <= 0) return;
+    _approxDurations[videoId] = Duration(
+        milliseconds: (info.size.totalBytes * 8 / bps * 1000).round());
   }
 
   bool _matchesDuration(AudioOnlyStreamInfo info, Duration? expected) {
