@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:audio_service/audio_service.dart';
@@ -19,7 +20,21 @@ class MaheraiAudioHandler extends BaseAudioHandler with SeekHandler {
   final DownloadService downloads;
   final LibraryService library;
 
-  final AudioPlayer player = AudioPlayer();
+  // Tuned for fast time-to-first-audio: without this, AVPlayer (iOS) waits
+  // several seconds of "safe" buffer before starting, and ExoPlayer (Android)
+  // waits 2.5s. Music streams are ~130 kbps, so a small head start is plenty;
+  // rebuffering still uses a comfortable margin.
+  final AudioPlayer player = AudioPlayer(
+    audioLoadConfiguration: AudioLoadConfiguration(
+      darwinLoadControl: DarwinLoadControl(
+        automaticallyWaitsToMinimizeStalling: false,
+      ),
+      androidLoadControl: AndroidLoadControl(
+        bufferForPlaybackDuration: const Duration(milliseconds: 750),
+        bufferForPlaybackAfterRebufferDuration: const Duration(seconds: 3),
+      ),
+    ),
+  );
 
   // UI-observable state.
   final ValueNotifier<List<Track>> queueTracks = ValueNotifier([]);
@@ -39,6 +54,7 @@ class MaheraiAudioHandler extends BaseAudioHandler with SeekHandler {
   int _consecutiveErrors = 0;
   int _playRequestSeq = 0;
   List<Track>? _unshuffled;
+  String? _cutoffRetryId;
 
   MaheraiAudioHandler({
     required this.streams,
@@ -269,10 +285,30 @@ class MaheraiAudioHandler extends BaseAudioHandler with SeekHandler {
       if (seq != _playRequestSeq) return; // superseded by a newer request
       await player.setAudioSource(source);
       if (seq != _playRequestSeq) return;
+      // Truncated-stream guard: if the loaded stream is much shorter than
+      // the song's real length, the URL served a cut version — re-resolve
+      // once with the cache bypassed.
+      final expected = track.duration;
+      final actual = player.duration;
+      if (localPath == null &&
+          expected != null &&
+          actual != null &&
+          expected - actual > const Duration(seconds: 10)) {
+        streams.invalidate(track.id);
+        try {
+          final freshUrl = await streams.audioUrl(track.id);
+          if (seq != _playRequestSeq) return;
+          await player.setAudioSource(AudioSource.uri(Uri.parse(freshUrl)));
+          if (seq != _playRequestSeq) return;
+        } catch (_) {
+          // keep the short stream rather than failing playback entirely
+        }
+      }
       _advancing = false;
       await player.play();
       _consecutiveErrors = 0;
       library.addRecent(track);
+      _prefetchUpcoming();
     } catch (_) {
       if (seq != _playRequestSeq) return;
       _advancing = false;
@@ -283,6 +319,36 @@ class MaheraiAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   void _onTrackCompleted() async {
+    // Cut-off guard: "completed" long before the song's real end means the
+    // stream URL died or was truncated mid-play. Re-resolve fresh and resume
+    // from where it stopped (once per track) instead of jumping ahead.
+    final t = current.value;
+    final expected = t?.duration;
+    final pos = player.position;
+    if (t != null &&
+        expected != null &&
+        expected - pos > const Duration(seconds: 10) &&
+        _cutoffRetryId != t.id &&
+        downloads.pathFor(t.id) == null) {
+      _cutoffRetryId = t.id;
+      streams.invalidate(t.id);
+      try {
+        final url = await streams.audioUrl(t.id);
+        if (current.value?.id == t.id) {
+          _advancing = true;
+          await player.setAudioSource(
+            AudioSource.uri(Uri.parse(url)),
+            initialPosition: pos,
+          );
+          _advancing = false;
+          await player.play();
+          return;
+        }
+      } catch (_) {
+        _advancing = false;
+        // fall through to normal advance
+      }
+    }
     if (repeat.value == AudioServiceRepeatMode.one) {
       await player.seek(Duration.zero);
       await player.play();
@@ -300,6 +366,21 @@ class MaheraiAudioHandler extends BaseAudioHandler with SeekHandler {
     }
     // Skip unplayable tracks instead of dying silently.
     skipToNext();
+  }
+
+  /// Resolves stream URLs for the next couple of queue items in the
+  /// background so skips and auto-advance start instantly (URLs are cached
+  /// in StreamService for ~4h).
+  void _prefetchUpcoming() {
+    final q = queueTracks.value;
+    for (var i = queueIndex.value + 1;
+        i <= queueIndex.value + 2 && i < q.length;
+        i++) {
+      final t = q[i];
+      if (downloads.pathFor(t.id) == null) {
+        unawaited(streams.audioUrl(t.id).catchError((_) => ''));
+      }
+    }
   }
 
   /// Tops up a radio queue when the listener is near its end.
@@ -330,6 +411,7 @@ class MaheraiAudioHandler extends BaseAudioHandler with SeekHandler {
       if (fresh.isNotEmpty) {
         queueTracks.value = [...queueTracks.value, ...fresh];
         _syncQueueMediaItems();
+        _prefetchUpcoming();
       }
     } catch (_) {
       // network hiccup — the queue just doesn't grow this time
