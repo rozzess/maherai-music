@@ -3,6 +3,7 @@
 // Run: dart run tool/api_smoke.dart
 import 'package:maherai_music/models/models.dart';
 import 'package:maherai_music/services/innertube.dart';
+import 'package:maherai_music/services/lyrics_service.dart';
 import 'package:maherai_music/services/stream_service.dart';
 
 Future<void> main() async {
@@ -56,6 +57,18 @@ Future<void> main() async {
     final text = await yt.lyricsPlain(lyricsId);
     print('yt lyrics: ${text?.split('\n').take(2).join(' / ')}');
   }
+
+  print('--- LyricsService (LRCLIB synced)');
+  final lyrics = await LyricsService(yt).forTrack(const Track(
+    id: 'test',
+    title: 'Blinding Lights',
+    artist: 'The Weeknd',
+    duration: Duration(seconds: 200),
+  ));
+  print('synced=${lyrics?.synced} source=${lyrics?.source} '
+      'lines=${lyrics?.lines.length} '
+      'first="${lyrics?.lines.firstWhere((l) => l.text.isNotEmpty).text}" '
+      '@${lyrics?.lines.firstWhere((l) => l.text.isNotEmpty).time}');
 
   print('--- StreamService.audioUrl(${song.id})');
   final streams = StreamService();
