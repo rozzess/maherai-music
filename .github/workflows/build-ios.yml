@@ -1,0 +1,47 @@
+name: Build iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "lib/**"
+      - "ios/**"
+      - "pubspec.yaml"
+      - "pubspec.lock"
+      - ".github/workflows/build-ios.yml"
+
+jobs:
+  build-ipa:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.32.5
+          cache: true
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/CocoaPods
+            ios/Pods
+          key: pods-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
+          restore-keys: pods-${{ runner.os }}-
+
+      - name: Build unsigned IPA
+        run: |
+          flutter pub get
+          flutter build ios --release --no-codesign
+          cd build/ios/iphoneos
+          mkdir Payload
+          cp -r Runner.app Payload/
+          zip -qry maherai_music.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maherai_music-ipa
+          path: build/ios/iphoneos/maherai_music.ipa

@@ -1,0 +1,39 @@
+name: maherai_music
+description: "Maherai Music — ad-free YouTube Music client with downloads, playlists and background playback."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.8.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  provider: ^6.1.2
+  http: ^1.2.0
+  youtube_explode_dart: ^2.3.6
+  just_audio: ^0.9.42
+  audio_service: ^0.18.16
+  audio_session: ^0.1.21
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  path_provider: ^2.1.5
+  cached_network_image: ^3.4.1
+  shimmer: ^3.0.0
+  palette_generator: ^0.3.3+7
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  flutter_launcher_icons: ^0.14.1
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  remove_alpha_ios: true
+  image_path: "assets/icon/icon.png"
+
+flutter:
+  uses-material-design: true
