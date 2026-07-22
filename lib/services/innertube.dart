@@ -108,9 +108,26 @@ class InnerTube {
 
   // ------------------------------------------------------------ item parsing
 
+  /// Type labels YT Music puts as the first run of the metadata column
+  /// ("Song • Artist • 3:45").
+  static const _typeLabels = {
+    'Song': YtKind.song,
+    'Video': YtKind.video,
+    'Album': YtKind.album,
+    'Single': YtKind.album,
+    'EP': YtKind.album,
+    'Artist': YtKind.artist,
+    'Playlist': YtKind.playlist,
+  };
+
   /// Parses a musicResponsiveListItemRenderer (rows in search results,
   /// playlists, albums, artist top-songs).
-  static YtItem? _parseListItem(Map item, {YtKind? hint, String? fallbackThumb}) {
+  static YtItem? _parseListItem(
+    Map item, {
+    YtKind? hint,
+    String? fallbackThumb,
+    String fallbackArtist = '',
+  }) {
     final thumb = _thumb(_nav(item, [
           'thumbnail',
           'musicThumbnailRenderer',
@@ -146,19 +163,34 @@ class InnerTube {
       'pageType',
     ]) as String?;
 
-    // Second flex column: artist / album / duration metadata.
+    // Second flex column: type label / artist / album / duration metadata.
     String artist = '';
     String? artistId;
     String? album;
     String? albumId;
     Duration? duration;
+    YtKind? labelKind;
     if (flex.length > 1) {
-      final metaRuns = _nav(flex[1], [
-        'musicResponsiveListItemFlexColumnRenderer',
-        'text',
-        'runs',
-      ]) as List?;
-      if (metaRuns != null) {
+      // Merge every metadata column (some layouts split artist/album/plays
+      // across flexColumns[1..n]).
+      var metaRuns = <dynamic>[];
+      for (var ci = 1; ci < flex.length; ci++) {
+        final r = _nav(flex[ci], [
+          'musicResponsiveListItemFlexColumnRenderer',
+          'text',
+          'runs',
+        ]) as List?;
+        if (r != null) metaRuns.addAll(r);
+      }
+      if (metaRuns.isNotEmpty) {
+        final firstText =
+            ((metaRuns.first is Map ? metaRuns.first['text'] : null) ?? '')
+                as String;
+        labelKind = _typeLabels[firstText.trim()];
+        if (labelKind != null) {
+          // Drop the label (and its trailing separator) from metadata parsing.
+          metaRuns = metaRuns.skip(1).toList();
+        }
         for (final run in metaRuns) {
           if (run is! Map) continue;
           final text = (run['text'] ?? '') as String;
@@ -194,7 +226,7 @@ class InnerTube {
       'runs',
     ])));
 
-    var kind = hint;
+    var kind = hint ?? labelKind;
     if (kind == null) {
       if (videoId != null) {
         kind = YtKind.song;
@@ -209,6 +241,8 @@ class InnerTube {
         return null;
       }
     }
+
+    if (artist.isEmpty) artist = fallbackArtist;
 
     if (kind == YtKind.song || kind == YtKind.video) {
       if (videoId == null) return null;
@@ -243,6 +277,70 @@ class InnerTube {
       title: title,
       subtitle: artist,
       thumbUrl: thumbUrl,
+    );
+  }
+
+  /// Parses a musicCardShelfRenderer (the "Top result" card in search).
+  static YtItem? _parseCardShelf(Map card) {
+    final title = _runsText(_nav(card, ['title', 'runs']));
+    if (title.isEmpty) return null;
+    final thumb = _thumb(_nav(card,
+        ['thumbnail', 'musicThumbnailRenderer', 'thumbnail', 'thumbnails']));
+    final subtitleRuns = _nav(card, ['subtitle', 'runs']) as List? ?? [];
+    final subtitleTexts = subtitleRuns
+        .map((r) => ((r is Map ? r['text'] : null) ?? '') as String)
+        .toList();
+    final labelKind = subtitleTexts.isEmpty
+        ? null
+        : _typeLabels[subtitleTexts.first.trim()];
+    final subtitle = subtitleTexts
+        .skip(labelKind == null ? 0 : 1)
+        .join()
+        .replaceAll(RegExp(r'^\s*•\s*'), '');
+
+    final nav = _nav(card, ['title', 'runs', 0, 'navigationEndpoint']);
+    final videoId = _nav(nav, ['watchEndpoint', 'videoId']) as String?;
+    var browseId = _nav(nav, ['browseEndpoint', 'browseId']) as String?;
+    final pageType = _nav(nav, [
+      'browseEndpoint',
+      'browseEndpointContextSupportedConfigs',
+      'browseEndpointContextMusicConfig',
+      'pageType',
+    ]) as String?;
+
+    if (videoId != null) {
+      final kind = labelKind == YtKind.video ? YtKind.video : YtKind.song;
+      return YtItem(
+        kind: kind,
+        id: videoId,
+        title: title,
+        subtitle: subtitle,
+        thumbUrl: thumb,
+        track: Track(
+          id: videoId,
+          title: title,
+          artist: subtitle.split('•').first.trim(),
+          thumbUrl: thumb,
+        ),
+      );
+    }
+    if (browseId == null) return null;
+    YtKind kind;
+    if (pageType == 'MUSIC_PAGE_TYPE_ARTIST' || browseId.startsWith('UC')) {
+      kind = YtKind.artist;
+    } else if (pageType == 'MUSIC_PAGE_TYPE_ALBUM' ||
+        browseId.startsWith('MPRE')) {
+      kind = YtKind.album;
+    } else {
+      kind = YtKind.playlist;
+      if (browseId.startsWith('VL')) browseId = browseId.substring(2);
+    }
+    return YtItem(
+      kind: kind,
+      id: browseId,
+      title: title,
+      subtitle: subtitle,
+      thumbUrl: thumb,
     );
   }
 
@@ -432,32 +530,72 @@ class InnerTube {
     final albums = <YtItem>[];
     final artists = <YtItem>[];
     final playlists = <YtItem>[];
+    final seen = <String>{};
+
+    void add(YtItem? item) {
+      if (item == null || !seen.add('${item.kind.name}:${item.id}')) return;
+      switch (item.kind) {
+        case YtKind.song:
+          songs.add(item);
+        case YtKind.video:
+          videos.add(item);
+        case YtKind.album:
+          albums.add(item);
+        case YtKind.artist:
+          artists.add(item);
+        case YtKind.playlist:
+          playlists.add(item);
+      }
+    }
 
     for (final section in contents) {
+      // Current layout: one itemSectionRenderer per result, kind encoded in
+      // the row's type label ("Song • ...").
+      final itemSection = _nav(section, ['itemSectionRenderer', 'contents']);
+      if (itemSection is List) {
+        for (final c in itemSection) {
+          final r = _nav(c, ['musicResponsiveListItemRenderer']);
+          if (r is Map) add(_parseListItem(r));
+        }
+        continue;
+      }
+      // Top result card.
+      final card = _nav(section, ['musicCardShelfRenderer']);
+      if (card is Map) {
+        final cardItem = _parseCardShelf(card);
+        add(cardItem);
+        final extra = _nav(card, ['contents']);
+        if (extra is List) {
+          for (final c in extra) {
+            final r = _nav(c, ['musicResponsiveListItemRenderer']);
+            // Songs nested in the card omit the artist — it's the card entity.
+            if (r is Map) {
+              add(_parseListItem(r, fallbackArtist: cardItem?.title ?? ''));
+            }
+          }
+        }
+        continue;
+      }
+      // Legacy layout: titled musicShelfRenderer per category.
       final shelf = _nav(section, ['musicShelfRenderer']);
       if (shelf == null) continue;
       final title = _runsText(_nav(shelf, ['title', 'runs'])).toLowerCase();
       YtKind? hint;
-      List<YtItem> bucket;
       if (title.contains('song')) {
         hint = YtKind.song;
-        bucket = songs;
       } else if (title.contains('video')) {
         hint = YtKind.video;
-        bucket = videos;
       } else if (title.contains('album') || title.contains('single')) {
         hint = YtKind.album;
-        bucket = albums;
       } else if (title.contains('artist')) {
         hint = YtKind.artist;
-        bucket = artists;
       } else if (title.contains('playlist')) {
         hint = YtKind.playlist;
-        bucket = playlists;
-      } else {
-        continue;
       }
-      bucket.addAll(_parseShelfContents(_nav(shelf, ['contents']), hint: hint));
+      for (final item
+          in _parseShelfContents(_nav(shelf, ['contents']), hint: hint)) {
+        add(item);
+      }
     }
     return SearchResults(
       songs: songs,
@@ -487,9 +625,10 @@ class InnerTube {
         [];
     final items = <YtItem>[];
     for (final section in contents) {
-      final shelf = _nav(section, ['musicShelfRenderer']);
-      if (shelf == null) continue;
-      items.addAll(_parseShelfContents(_nav(shelf, ['contents']), hint: kind));
+      final shelfContents = _nav(section, ['musicShelfRenderer', 'contents']) ??
+          _nav(section, ['itemSectionRenderer', 'contents']);
+      if (shelfContents == null) continue;
+      items.addAll(_parseShelfContents(shelfContents, hint: kind));
     }
     return items;
   }
