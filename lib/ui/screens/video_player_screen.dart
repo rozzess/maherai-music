@@ -4,15 +4,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../models/models.dart';
-import '../../services/audio_handler.dart';
+import '../../services/video_player_service.dart';
 import '../../theme.dart';
 import '../../util/fmt.dart';
 
-/// Plays a YouTube video (progressive MP4). Pauses music playback while
-/// open, keeps the screen awake, supports landscape fullscreen.
+/// Full-screen view over VideoPlayerService. The down-arrow minimizes into
+/// the floating mini window (playback continues); X closes for real.
 class VideoPlayerScreen extends StatefulWidget {
   final Track video;
   const VideoPlayerScreen({super.key, required this.video});
@@ -22,8 +21,6 @@ class VideoPlayerScreen extends StatefulWidget {
 }
 
 class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
-  VideoPlayerController? _controller;
-  String? _error;
   bool _showControls = true;
   bool _fullscreen = false;
   Timer? _hideTimer;
@@ -31,44 +28,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   @override
   void initState() {
     super.initState();
-    WakelockPlus.enable();
-    // One player at a time: pause the music.
-    context.read<MaheraiAudioHandler>().pause();
-    _load();
-  }
-
-  Future<void> _load() async {
-    setState(() => _error = null);
-    try {
-      final url = await context
-          .read<MaheraiAudioHandler>()
-          .streams
-          .videoUrl(widget.video.id);
-      final controller = VideoPlayerController.networkUrl(Uri.parse(url));
-      await controller.initialize();
-      if (!mounted) {
-        controller.dispose();
-        return;
-      }
-      setState(() => _controller = controller);
-      controller.addListener(_onTick);
-      controller.play();
-      _scheduleHide();
-    } catch (e) {
-      if (mounted) setState(() => _error = 'Couldn’t load this video.');
-    }
-  }
-
-  void _onTick() {
-    if (mounted) setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.read<VideoPlayerService>().open(widget.video);
+    });
+    _scheduleHide();
   }
 
   void _scheduleHide() {
     _hideTimer?.cancel();
     _hideTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted && (_controller?.value.isPlaying ?? false)) {
-        setState(() => _showControls = false);
-      }
+      final playing = context.mounted &&
+          (context.read<VideoPlayerService>().controller?.value.isPlaying ??
+              false);
+      if (mounted && playing) setState(() => _showControls = false);
     });
   }
 
@@ -77,9 +49,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     if (_showControls) _scheduleHide();
   }
 
-  Future<void> _toggleFullscreen() async {
-    _fullscreen = !_fullscreen;
-    if (_fullscreen) {
+  Future<void> _setFullscreen(bool on) async {
+    _fullscreen = on;
+    if (on) {
       await SystemChrome.setPreferredOrientations([
         DeviceOrientation.landscapeLeft,
         DeviceOrientation.landscapeRight,
@@ -93,12 +65,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     if (mounted) setState(() {});
   }
 
+  Future<void> _minimize() async {
+    if (_fullscreen) await _setFullscreen(false);
+    if (!mounted) return;
+    context.read<VideoPlayerService>().minimize();
+    Navigator.of(context).pop();
+  }
+
+  Future<void> _close() async {
+    if (_fullscreen) await _setFullscreen(false);
+    if (!mounted) return;
+    context.read<VideoPlayerService>().close();
+    Navigator.of(context).pop();
+  }
+
   @override
   void dispose() {
     _hideTimer?.cancel();
-    _controller?.removeListener(_onTick);
-    _controller?.dispose();
-    WakelockPlus.disable();
+    // Screen never owns the controller — the service does.
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
@@ -106,63 +90,71 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final c = _controller;
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: SafeArea(
-        child: Column(
-          children: [
-            Expanded(
-              flex: _fullscreen ? 1 : 0,
-              child: AspectRatio(
-                aspectRatio: _fullscreen
-                    ? MediaQuery.of(context).size.aspectRatio
-                    : 16 / 9,
-                child: GestureDetector(
-                  onTap: _toggleControls,
-                  child: Stack(
-                    fit: StackFit.expand,
-                    alignment: Alignment.center,
-                    children: [
-                      if (c != null && c.value.isInitialized)
-                        FittedBox(
-                          fit: BoxFit.contain,
-                          child: SizedBox(
-                            width: c.value.size.width,
-                            height: c.value.size.height,
-                            child: VideoPlayer(c),
+    final svc = context.watch<VideoPlayerService>();
+    final c = svc.controller;
+    return PopScope(
+      // Swiping back minimizes rather than killing playback.
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _minimize();
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: SafeArea(
+          child: Column(
+            children: [
+              Expanded(
+                flex: _fullscreen ? 1 : 0,
+                child: AspectRatio(
+                  aspectRatio: _fullscreen
+                      ? MediaQuery.of(context).size.aspectRatio
+                      : 16 / 9,
+                  child: GestureDetector(
+                    onTap: _toggleControls,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      alignment: Alignment.center,
+                      children: [
+                        if (c != null && c.value.isInitialized)
+                          FittedBox(
+                            fit: BoxFit.contain,
+                            child: SizedBox(
+                              width: c.value.size.width,
+                              height: c.value.size.height,
+                              child: VideoPlayer(c),
+                            ),
+                          )
+                        else if (svc.error != null)
+                          Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(svc.error!,
+                                    style: TextStyle(color: MTheme.textMid)),
+                                const SizedBox(height: 12),
+                                FilledButton(
+                                  style: FilledButton.styleFrom(
+                                      backgroundColor: MTheme.accent),
+                                  onPressed: svc.retry,
+                                  child: const Text('Retry'),
+                                ),
+                              ],
+                            ),
+                          )
+                        else
+                          const Center(
+                            child: CircularProgressIndicator(
+                                color: MTheme.accent),
                           ),
-                        )
-                      else if (_error != null)
-                        Center(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(_error!,
-                                  style: TextStyle(color: MTheme.textMid)),
-                              const SizedBox(height: 12),
-                              FilledButton(
-                                style: FilledButton.styleFrom(
-                                    backgroundColor: MTheme.accent),
-                                onPressed: _load,
-                                child: const Text('Retry'),
-                              ),
-                            ],
-                          ),
-                        )
-                      else
-                        const Center(
-                          child: CircularProgressIndicator(
-                              color: MTheme.accent),
-                        ),
-                      if (_showControls) _controlsOverlay(c),
-                    ],
+                        if (_showControls) _controlsOverlay(c),
+                      ],
+                    ),
                   ),
                 ),
               ),
-            ),
-            if (!_fullscreen) _infoPanel(),
-          ],
+              if (!_fullscreen) _infoPanel(svc),
+            ],
+          ),
         ),
       ),
     );
@@ -178,8 +170,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
           Row(
             children: [
               IconButton(
+                tooltip: 'Minimize',
                 icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 30),
-                onPressed: () => Navigator.of(context).pop(),
+                onPressed: _minimize,
               ),
               Expanded(
                 child: Text(
@@ -194,7 +187,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                 icon: Icon(_fullscreen
                     ? Icons.fullscreen_exit_rounded
                     : Icons.fullscreen_rounded),
-                onPressed: _toggleFullscreen,
+                onPressed: () => _setFullscreen(!_fullscreen),
+              ),
+              IconButton(
+                tooltip: 'Close',
+                icon: const Icon(Icons.close_rounded),
+                onPressed: _close,
               ),
             ],
           ),
@@ -245,7 +243,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     );
   }
 
-  Widget _infoPanel() {
+  Widget _infoPanel(VideoPlayerService svc) {
     return Expanded(
       child: Container(
         width: double.infinity,
@@ -267,6 +265,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
             Text(
               widget.video.artist,
               style: TextStyle(fontSize: 14, color: MTheme.textMid),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Icon(Icons.picture_in_picture_alt_rounded,
+                    size: 16, color: MTheme.textLow),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Swipe down to keep watching in a mini window. '
+                    'Audio keeps playing if you leave the app.',
+                    style: TextStyle(fontSize: 12, color: MTheme.textLow),
+                  ),
+                ),
+              ],
             ),
           ],
         ),

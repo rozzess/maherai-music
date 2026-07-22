@@ -20,14 +20,15 @@ class MaheraiAudioHandler extends BaseAudioHandler with SeekHandler {
   final DownloadService downloads;
   final LibraryService library;
 
-  // Tuned for fast time-to-first-audio: without this, AVPlayer (iOS) waits
-  // several seconds of "safe" buffer before starting, and ExoPlayer (Android)
-  // waits 2.5s. Music streams are ~130 kbps, so a small head start is plenty;
-  // rebuffering still uses a comfortable margin.
+  // Tuned for fast time-to-first-audio. NOTE: automaticallyWaitsToMinimize-
+  // Stalling must stay ON (default) — disabling it makes AVPlayer's clock
+  // keep running when the buffer is empty, i.e. the position advances in
+  // total silence ("pretend playback"). A small forward-buffer target gets
+  // the fast start without that failure mode.
   final AudioPlayer player = AudioPlayer(
     audioLoadConfiguration: AudioLoadConfiguration(
       darwinLoadControl: DarwinLoadControl(
-        automaticallyWaitsToMinimizeStalling: false,
+        preferredForwardBufferDuration: const Duration(seconds: 5),
       ),
       androidLoadControl: AndroidLoadControl(
         bufferForPlaybackDuration: const Duration(milliseconds: 750),

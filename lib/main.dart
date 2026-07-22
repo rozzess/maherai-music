@@ -10,8 +10,11 @@ import 'services/innertube.dart';
 import 'services/library_service.dart';
 import 'services/lyrics_service.dart';
 import 'services/stream_service.dart';
+import 'services/video_player_service.dart';
 import 'theme.dart';
+import 'ui/nav.dart';
 import 'ui/root_shell.dart';
+import 'ui/widgets/floating_video.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -47,12 +50,16 @@ Future<void> main() async {
     ),
   );
 
+  final videoService =
+      VideoPlayerService(streams: streams, handler: audioHandler);
+
   runApp(MaheraiApp(
     innertube: innertube,
     library: library,
     downloads: downloads,
     lyrics: lyrics,
     audioHandler: audioHandler,
+    videoService: videoService,
   ));
 }
 
@@ -62,6 +69,7 @@ class MaheraiApp extends StatelessWidget {
   final DownloadService downloads;
   final LyricsService lyrics;
   final MaheraiAudioHandler audioHandler;
+  final VideoPlayerService videoService;
 
   const MaheraiApp({
     super.key,
@@ -70,6 +78,7 @@ class MaheraiApp extends StatelessWidget {
     required this.downloads,
     required this.lyrics,
     required this.audioHandler,
+    required this.videoService,
   });
 
   @override
@@ -81,11 +90,21 @@ class MaheraiApp extends StatelessWidget {
         Provider.value(value: audioHandler),
         ChangeNotifierProvider.value(value: library),
         ChangeNotifierProvider.value(value: downloads),
+        ChangeNotifierProvider.value(value: videoService),
       ],
       child: MaterialApp(
         title: 'Maherai Music',
         debugShowCheckedModeBanner: false,
         theme: MTheme.dark(),
+        navigatorKey: rootNavigatorKey,
+        // App-level overlay so the floating video window stays visible on
+        // every screen, including pushed routes.
+        builder: (context, child) => Stack(
+          children: [
+            if (child != null) child,
+            const FloatingVideo(),
+          ],
+        ),
         home: const RootShell(),
       ),
     );
